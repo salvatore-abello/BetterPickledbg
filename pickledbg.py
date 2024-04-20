@@ -192,6 +192,7 @@ class _Unpickler:
         self.metastack = []
         self.stack = []
         self.memo = {}
+        self.last_funcname = None
         self.append = self.stack.append
         self.calling_function = []
         self.proto = 0
@@ -235,12 +236,13 @@ class _Unpickler:
                     arguments = [self.stack[i]] if key[0] == ord('i') else (self.stack[i + 1],)
 
                     if funcname in self.breakpoints:
-                        if not self.skip_next_breakpoint:
+                        if not self.breakpoints[funcname]["skip_next_breakpoint"]:
+                            self.last_funcname = funcname
                             self.__file.seek(self.__file.tell() - 1)
                             self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
 
                             raise EOFError
-                        self.skip_next_breakpoint = False
+                        self.breakpoints[funcname]["skip_next_breakpoint"] = False
                     return
 
     def next_instruction(self, single=False):
@@ -277,7 +279,10 @@ class _Unpickler:
 
     def handle_breakpoint(self, inp):
         function_name = inp[0]
-        self.breakpoints[function_name] = 0
+        self.breakpoints[function_name] = {
+            "number": 0,
+            "skip_next_breakpoint": False
+        }
 
     def handle_exit(self, _):
         raise _Stop(None)
@@ -301,7 +306,7 @@ class _Unpickler:
             self.print_state()
 
     def print_entire_state(self):
-        self.skip_next_breakpoint = True
+        self.breakpoints[self.last_funcname]["skip_next_breakpoint"] = True
         self.print_state()
 
     def handle_help(self, _):
