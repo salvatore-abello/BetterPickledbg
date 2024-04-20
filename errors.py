@@ -1,0 +1,12 @@
+class PickleError(Exception):
+    pass
+
+class PicklingError(PickleError):
+    pass
+
+class UnpicklingError(PickleError):
+    pass
+
+class _Stop(Exception):
+    def __init__(self, value):
+        self.value = value

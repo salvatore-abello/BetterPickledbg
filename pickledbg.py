@@ -55,8 +55,11 @@ from struct import unpack
 from copyreg import _inverted_registry, _extension_cache
 import _compat_pickle, pickletools
 from types import *
-
-
+from opcodes import *
+from colors import *
+from unframer import _Unframer
+from errors import UnpicklingError, PickleError, PicklingError, _Stop
+from utils import _getattribute, whichmodule, encode_long, decode_long
 
 ### GLOBALS ###
 pickle_bytes = b''
@@ -65,309 +68,7 @@ HIGHEST_PROTOCOL = 5
 pickle_disasm = []
 disasm_line_no = 0
 
-MARK           = b'('
-STOP           = b'.'
-POP            = b'0'
-POP_MARK       = b'1'
-DUP            = b'2'
-FLOAT          = b'F'
-INT            = b'I'
-BININT         = b'J'
-BININT1        = b'K'
-LONG           = b'L'
-BININT2        = b'M'
-NONE           = b'N'
-PERSID         = b'P'
-BINPERSID      = b'Q'
-REDUCE         = b'R'
-STRING         = b'S'
-BINSTRING      = b'T'
-SHORT_BINSTRING= b'U'
-UNICODE        = b'V'
-BINUNICODE     = b'X'
-APPEND         = b'a'
-BUILD          = b'b'
-GLOBAL         = b'c'
-DICT           = b'd'
-EMPTY_DICT     = b'}'
-APPENDS        = b'e'
-GET            = b'g'
-BINGET         = b'h'
-INST           = b'i'
-LONG_BINGET    = b'j'
-LIST           = b'l'
-EMPTY_LIST     = b']'
-OBJ            = b'o'
-PUT            = b'p'
-BINPUT         = b'q'
-LONG_BINPUT    = b'r'
-SETITEM        = b's'
-TUPLE          = b't'
-EMPTY_TUPLE    = b')'
-SETITEMS       = b'u'
-BINFLOAT       = b'G'
-TRUE           = b'I01\n'
-FALSE          = b'I00\n'
-PROTO          = b'\x80'
-NEWOBJ         = b'\x81'
-EXT1           = b'\x82'
-EXT2           = b'\x83'
-EXT4           = b'\x84'
-TUPLE1         = b'\x85'
-TUPLE2         = b'\x86'
-TUPLE3         = b'\x87'
-NEWTRUE        = b'\x88'
-NEWFALSE       = b'\x89'
-LONG1          = b'\x8a'
-LONG4          = b'\x8b'
-BINBYTES       = b'B'
-SHORT_BINBYTES = b'C'
-SHORT_BINUNICODE = b'\x8c'
-BINUNICODE8      = b'\x8d'
-BINBYTES8        = b'\x8e'
-EMPTY_SET        = b'\x8f'
-ADDITEMS         = b'\x90'
-FROZENSET        = b'\x91'
-NEWOBJ_EX        = b'\x92'
-STACK_GLOBAL     = b'\x93'
-MEMOIZE          = b'\x94'
-FRAME            = b'\x95'
-BYTEARRAY8       = b'\x96'
-NEXT_BUFFER      = b'\x97'
-READONLY_BUFFER  = b'\x98'
-
-colors = {
-    "normal"         : "\033[0m",
-    "gray"           : "\033[1;38;5;240m",
-    "light_gray"     : "\033[0;37m",
-    "red"            : "\033[31m",
-    "green"          : "\033[32m",
-    "yellow"         : "\033[33m",
-    "blue"           : "\033[34m",
-    "pink"           : "\033[35m",
-    "cyan"           : "\033[36m",
-    "bold"           : "\033[1m",
-    "underline"      : "\033[4m",
-    "underline_off"  : "\033[24m",
-    "highlight"      : "\033[3m",
-    "highlight_off"  : "\033[23m",
-    "blink"          : "\033[5m",
-    "blink_off"      : "\033[25m",
-}
-
-
-
-### FUNCTIONS ###
-def _getattribute(obj, name):
-    for subpath in name.split('.'):
-        if subpath == '<locals>':
-            raise AttributeError("Can't get local attribute {!r} on {!r}".format(name, obj))
-        try:
-            parent = obj
-            obj = getattr(obj, subpath)
-        except AttributeError:
-            raise AttributeError("Can't get attribute {!r} on {!r}".format(name, obj)) from None
-    return obj, parent
-
-def whichmodule(obj, name):
-    """Find the module an object belong to."""
-    module_name = getattr(obj, '__module__', None)
-    if module_name is not None:
-        return module_name
-    for module_name, module in sys.modules.copy().items():
-        if (module_name == '__main__'
-            or module_name == '__mp_main__'  # bpo-42406
-            or module is None):
-            continue
-        try:
-            if _getattribute(module, name)[0] is obj:
-                return module_name
-        except AttributeError:
-            pass
-    return '__main__'
-
-def encode_long(x):
-    if x == 0:
-        return b''
-    nbytes = (x.bit_length() >> 3) + 1
-    result = x.to_bytes(nbytes, byteorder='little', signed=True)
-    if x < 0 and nbytes > 1:
-        if result[-1] == 0xff and (result[-2] & 0x80) != 0:
-            result = result[:-1]
-    return result
-
-def decode_long(data):
-    return int.from_bytes(data, byteorder='little', signed=True)
-
-def colorify(text: str, attrs: str) -> str:
-    msg = [colors[attr] for attr in attrs.split() if attr in colors]
-    msg.append(str(text))
-    if colors["highlight"] in msg:   msg.append(colors["highlight_off"])
-    if colors["underline"] in msg:   msg.append(colors["underline_off"])
-    if colors["blink"] in msg:       msg.append(colors["blink_off"])
-    msg.append(colors["normal"])
-    return "".join(msg)
-
-def redify(msg: str) -> str:        return colorify(msg, "red")
-
-def greenify(msg: str) -> str:      return colorify(msg, "green")
-
-def blueify(msg: str) -> str:       return colorify(msg, "blue")
-
-def yellowify(msg: str) -> str:     return colorify(msg, "yellow")
-
-def grayify(msg: str) -> str:       return colorify(msg, "gray")
-
-def light_grayify(msg: str) -> str: return colorify(msg, "light_gray")
-
-def pinkify(msg: str) -> str:       return colorify(msg, "pink")
-
-def cyanify(msg: str) -> str:       return colorify(msg, "cyan")
-
-def boldify(msg: str) -> str:       return colorify(msg, "bold")
-
-def underlinify(msg: str) -> str:   return colorify(msg, "underline")
-
-def highlightify(msg: str) -> str:  return colorify(msg, "highlight")
-
-def blinkify(msg: str) -> str:      return colorify(msg, "blink")
-
-def colorize_array(arr) -> str:
-    if safe_type(arr) == list:
-        BEGIN = '['
-        END = ']'
-    elif safe_type(arr) == tuple:
-        BEGIN = '('
-        END = ')'
-
-    retval = BEGIN
-
-    for element in arr:
-        if safe_type(element) == str or safe_type(element) == bytes:
-            retval += pinkify(safe_ascii(element))+", "
-        elif safe_type(element) == dict:
-            retval += safe_ascii(element)+", "
-        elif safe_type(element) == int or safe_type(element) == float:
-            retval += cyanify(safe_ascii(element))+", "
-        elif safe_type(element) == list or safe_type(element) == tuple:
-            retval += colorize_array(element)+", "
-        elif safe_type(element) == dict:
-            retval += colorize_dict(arr[element])+", "
-        elif element == None:
-            retval += blueify(safe_ascii(element))+", "
-        else:
-            retval += yellowify(safe_ascii(element))+", "
-
-    if retval != BEGIN:
-        retval = retval[:-2]+END
-    else:
-        retval += END
-
-    return retval
-
-def colorize_dict(arr: dict) -> str:
-    retval = '{'
-
-    for element in arr:
-        retval += safe_ascii(element)+": "
-
-
-        if safe_type(arr[element]) == str or safe_type(arr[element]) == bytes:
-            retval += pinkify(safe_ascii(arr[element]))+", "
-        elif safe_type(arr[element]) == dict:
-            retval += safe_ascii(arr[element])+", "
-        elif safe_type(arr[element]) == int or safe_type(arr[element]) == float:
-            retval += cyanify(safe_ascii(arr[element]))+", "
-        elif safe_type(arr[element]) == list or safe_type(arr[element]) == tuple:
-            retval += colorize_array(arr[element])+", "
-        elif safe_type(arr[element]) == dict:
-            retval += colorize_dict(arr[element])+", "
-        elif arr[element] == None:
-            retval += blueify(safe_ascii(arr[element]))+", "
-        else:
-            retval += yellowify(safe_ascii(arr[element]))+", "
-
-    if retval != '{':
-        retval = retval[:-2]+'}'
-    else:
-        retval += '}'
-
-    return retval
-
-
-
-### CLASSES ###
-class PickleError(Exception):
-    pass
-
-class PicklingError(PickleError):
-    pass
-
-class UnpicklingError(PickleError):
-    pass
-
-class _Unframer:
-
-    def __init__(self, file_read, file_readline, file_tell=None):
-        self.file_read = file_read
-        self.file_readline = file_readline
-        self.current_frame = None
-
-    def readinto(self, buf):
-        if self.current_frame:
-            n = self.current_frame.readinto(buf)
-            if n == 0 and len(buf) != 0:
-                self.current_frame = None
-                n = len(buf)
-                buf[:] = self.file_read(n)
-                return n
-            if n < len(buf):
-                raise UnpicklingError(
-                    "pickle exhausted before end of frame")
-            return n
-        else:
-            n = len(buf)
-            buf[:] = self.file_read(n)
-            return n
-
-    def read(self, n):
-        if self.current_frame:
-            data = self.current_frame.read(n)
-            if not data and n != 0:
-                self.current_frame = None
-                return self.file_read(n)
-            if len(data) < n:
-                raise UnpicklingError(
-                    "pickle exhausted before end of frame")
-            return data
-        else:
-            return self.file_read(n)
-
-    def readline(self):
-        if self.current_frame:
-            data = self.current_frame.readline()
-            if not data:
-                self.current_frame = None
-                return self.file_readline()
-            if data[-1] != b'\n'[0]:
-                raise UnpicklingError(
-                    "pickle exhausted before end of frame")
-            return data
-        else:
-            return self.file_readline()
-
-    def load_frame(self, frame_size):
-        if self.current_frame and self.current_frame.read() != b'':
-            raise UnpicklingError(
-                "beginning of a new frame before end of current frame")
-        self.current_frame = io.BytesIO(self.file_read(frame_size))
-
-class _Stop(Exception):
-    def __init__(self, value):
-        self.value = value
-
 class _Unpickler:
-
     def __init__(self, file, *, fix_imports=True,
                  encoding="ASCII", errors="strict", buffers=None):
         """This takes a binary file for reading a pickle data stream.
@@ -407,14 +108,48 @@ class _Unpickler:
         default to 'ASCII' and 'strict', respectively. *encoding* can be
         'bytes' to read these 8-bit string instances as bytes objects.
         """
+        self.__file = file
         self._buffers = iter(buffers) if buffers is not None else None
         self._file_readline = file.readline
         self._file_read = file.read
-        self.memo = {}
         self.encoding = encoding
         self.errors = errors
         self.proto = 0
         self.fix_imports = fix_imports
+        self.commands = [
+            {
+                "description": "Step to the next instruction",
+                "list_of_aliases": ["step", "s"], 
+                "handler": self.handle_step
+            },
+            {
+                "description": "Run the pickle code",
+                "list_of_aliases": ["run", "r", "start"],
+                "handler": self.handle_run
+            },
+            {
+                "description": "Exit the debugger",
+                "list_of_aliases": ["exit", "quit", "q"],
+                "handler": self.handle_exit
+            },
+            {
+                "description": "Show this help menu",
+                "list_of_aliases": ["help", "?"],
+                "handler": self.handle_help
+            },
+            {
+                "description": "Continue executing until the next breakpoint",
+                "list_of_aliases": ["continue", "c"],
+                "handler": self.handle_continue,
+                "syntax": "continue [number_of_skipped_breakpoints]"
+            },
+            {
+                "description": "Set a breakpoint at the specified line number or a specified number",
+                "list_of_aliases": ["breakpoint", "break", "b"],
+            }
+        ]
+
+        self.load()
 
     def load(self):
         """Read a pickled object representation from the open file.
@@ -432,135 +167,133 @@ class _Unpickler:
         self.readline = self._unframer.readline
         self.metastack = []
         self.stack = []
+        self.memo = {}
         self.append = self.stack.append
         self.proto = 0
 
         self.last_command = None
         self.start = False
+
+    def run(self):
         try:
             while True:
                 self.handle_input()
         except _Stop as stopinst:
             return stopinst.value
         
+    def next_instruction(self):
+        global pickle_disasm
+        global disasm_line_no
+
+        key = self.read(1)
+        if not key:
+            raise EOFError
+        assert isinstance(key, bytes_types)
+
+        self.dispatch[key[0]](self)
+
+        disasm_line_no += 1
+
+    def handle_step(self, inp):
+        self.next_instruction()
+        self.print_state()
+
+    def handle_exit(self, _):
+        raise _Stop(None)
+
+    def handle_run(self, _):
+        global pickle_disasm
+        global disasm_line_no
+
+        self.load()
+        self.__file.seek(0)
+
+        disasm_line_no = 0
+        self.start = True
+        while True:
+            self.next_instruction()
+        
+    def handle_continue(self, inp):pass
+
+    def handle_help(self, _):
+        terminal_width = safe_get_terminal_size()[0]
+        lengths = (terminal_width - len(' pickledbg help'))//2
+        safe_print(grayify('─'*lengths)+cyanify(' pickledbg help ')+grayify('─'*lengths))
+
+        for cmd in self.commands:
+            safe_print(cyanify("start"))
+            safe_print(redify(cmd["description"]))
+            if "list_of_aliases" in cmd:
+                safe_print(yellowify("Aliases:")+f' {", ".join(cmd["list_of_aliases"])}')
+            if "syntax" in cmd:
+                safe_print(yellowify("Syntax:")+f' {cmd["syntax"]}')
+            safe_print()
+            safe_print(grayify('─'*terminal_width))
+
     def handle_input(self, inp=None):
         global pickle_disasm
         global disasm_line_no
 
         if inp is None:
-            safe_print(greenify("pickledbg>  "), end="")
+            safe_print((greenify if self.start else redify)("pickledbg>  "), end="")
             try:
                 inp = safe_input()
-            except EOFError:
+            except (EOFError, KeyboardInterrupt):
                 safe_print(redify("\n[+] Exiting..."))
                 raise _Stop(None)
-            except KeyboardInterrupt:
-                safe_print(redify("\n[+] Exiting..."))
-                raise _Stop(None)
-
-        if inp == "ni" or inp == "next":
-            if not self.start:
-                safe_print(redify("[!] You must start the debugger first. Try using the 'start' command."))
-                return
-
-            self.last_command = inp
-
-            # run the next instruction
-            key = self.read(1)
-            if not key:
-                raise EOFError
-            assert isinstance(key, bytes_types)
-
-            self.dispatch[key[0]](self)
-
-            # print current state
-            disasm_line_no += 1
-            self.print_state()
-
-        elif inp == "start" or inp == "run":
-            self.last_command = inp
-
-            if self.start:
-                safe_print(redify("[!] Debugger already started. You must exit and restart the program again."))
-                return
-
-            self.start = True
-            self.print_state()
-
-        elif inp == "":
-            self.handle_input(self.last_command)
-
-        elif inp[:6] == "export":
-            self.last_command = inp
-
-            filename = "out.disasm"
-
-            if safe_len(inp) > 6:
-                if inp[6] == " ":
-                    filename = inp[7:].strip()
-                else:
-                    safe_print(redify("[!] Invalid command. Type 'help' for a list of available commands."))
-                    return
-
-            safe_print("Exporting disassembly to " + filename + "...")
-
-            try:
-                with safe_open(filename, "w") as tmpfile:
-                    pickletools.dis(safe_open(sys.argv[1], "rb"), out=tmpfile)
-            except:
-                safe_print(redify("[!] Error: could not export pickle disassembly"))
-
-        elif inp == "help" or inp == "?":
-            self.last_command = inp
-
-            terminal_width = safe_get_terminal_size()[0]
-            lengths = (terminal_width - len(' pickledbg help'))//2
-            safe_print(grayify('─'*lengths)+cyanify(' pickledbg help ')+grayify('─'*lengths))
-
-            # start
-            safe_print(redify("start"))
-            safe_print("Starts the debugger, pointing to the first instruction but not executing it. Must only be ran once. To restart debugging, close the program and run it again. Must also be run before stepping through instructions.")
-            safe_print(yellowify("Aliases:")+' run')
-            safe_print()
-            safe_print(grayify('─'*terminal_width))
-
-
-            # ni
-            safe_print(redify("ni"))
-            safe_print("Executes the next instruction and shows the updated Pickle Machine state. Must be ran after 'start'.")
-            safe_print(yellowify("Aliases:")+' next')
-            safe_print()
-            safe_print(grayify('─'*terminal_width))
-
-
-            # export 
-            safe_print(redify("export"))
-            safe_print("Writes the disassembly of the pickle to a file. If no filename is specified, the default is 'out.disasm'.")
-            safe_print(yellowify("Syntax:")+' export [filename]')
-            safe_print()
-            safe_print(grayify('─'*terminal_width))
-
-
-            # help
-            safe_print(redify("help"))
-            safe_print("Shows this help menu.")
-            safe_print(yellowify("Aliases:")+' ?')
-            safe_print()
-            safe_print(grayify('─'*terminal_width))
-
-
-            # exit
-            safe_print(redify("exit"))
-            safe_print("Exits the debugger.")
-            safe_print(yellowify("Aliases:")+' quit')
-            safe_print()
-            safe_print(grayify('─'*terminal_width))
-
-        elif inp == "exit" or inp == "quit":
-            raise _Stop(None)
-
+            
+        inp = inp or self.last_command
+        for cmd in self.commands:
+            match inp:
+                case x if x in cmd["list_of_aliases"]:
+                    cmd["handler"](inp)
+                    break
         else:
             safe_print(redify("[!] Invalid command. Type 'help' for a list of available commands."))
+
+        self.last_command = inp
+
+        # elif inp == "help" or inp == "?":
+        #     self.last_command = inp
+
+        #     terminal_width = safe_get_terminal_size()[0]
+        #     lengths = (terminal_width - len(' pickledbg help'))//2
+        #     safe_print(grayify('─'*lengths)+cyanify(' pickledbg help ')+grayify('─'*lengths))
+
+        #     # start
+        #     safe_print(redify("start"))
+        #     safe_print("Starts the debugger, pointing to the first instruction but not executing it. Must only be ran once. To restart debugging, close the program and run it again. Must also be run before stepping through instructions.")
+        #     safe_print(yellowify("Aliases:")+' run')
+        #     safe_print()
+        #     safe_print(grayify('─'*terminal_width))
+
+        #     # ni
+        #     safe_print(redify("ni"))
+        #     safe_print("Executes the next instruction and shows the updated Pickle Machine state. Must be ran after 'start'.")
+        #     safe_print(yellowify("Aliases:")+' next')
+        #     safe_print()
+        #     safe_print(grayify('─'*terminal_width))
+
+        #     # export 
+        #     safe_print(redify("export"))
+        #     safe_print("Writes the disassembly of the pickle to a file. If no filename is specified, the default is 'out.disasm'.")
+        #     safe_print(yellowify("Syntax:")+' export [filename]')
+        #     safe_print()
+        #     safe_print(grayify('─'*terminal_width))
+
+        #     # help
+        #     safe_print(redify("help"))
+        #     safe_print("Shows this help menu.")
+        #     safe_print(yellowify("Aliases:")+' ?')
+        #     safe_print()
+        #     safe_print(grayify('─'*terminal_width))
+
+        #     # exit
+        #     safe_print(redify("exit"))
+        #     safe_print("Exits the debugger.")
+        #     safe_print(yellowify("Aliases:")+' quit')
+        #     safe_print()
+        #     safe_print(grayify('─'*terminal_width))
 
     def print_state(self):
         safe_system('clear -x')
@@ -1144,4 +877,4 @@ if __name__ == "__main__":
         print(redify("[!] Error: could not disassemble pickle file"))
         sys.exit(1)
     
-    _Unpickler(open(sys.argv[1], "rb")).load()
+    _Unpickler(open(sys.argv[1], "rb")).run()
