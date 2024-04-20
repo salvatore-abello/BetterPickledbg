@@ -120,32 +120,38 @@ class _Unpickler:
         self.skip_next_breakpoint = False
         self.commands = [
             {
+                "cmd": "step",
                 "description": "Step to the next instruction",
                 "list_of_aliases": ["step", "s"], 
                 "handler": self.handle_step
             },
             {
+                "cmd": "run",
                 "description": "Run the pickle code",
                 "list_of_aliases": ["run", "r", "start"],
                 "handler": self.handle_run
             },
             {
+                "cmd": "exit",
                 "description": "Exit the debugger",
                 "list_of_aliases": ["exit", "quit", "q"],
                 "handler": self.handle_exit
             },
             {
+                "cmd": "help",
                 "description": "Show this help menu",
                 "list_of_aliases": ["help", "?"],
                 "handler": self.handle_help
             },
             {
+                "cmd": "continue",
                 "description": "Continue executing until the next breakpoint",
                 "list_of_aliases": ["continue", "c"],
                 "handler": self.handle_continue,
                 "syntax": "continue [number_of_skipped_breakpoints]"
             },
             {
+                "cmd": "breakpoint",
                 "description": "Set a breakpoint at the specified line number or a specified number",
                 "list_of_aliases": ["breakpoint", "break", "b"],
                 "handler": self.handle_breakpoint,
@@ -278,7 +284,7 @@ class _Unpickler:
         safe_print(grayify('─'*lengths)+cyanify(' pickledbg help ')+grayify('─'*lengths))
 
         for cmd in self.commands:
-            safe_print(cyanify("start"))
+            safe_print(cyanify(cmd["cmd"]))
             safe_print(redify(cmd["description"]))
             if "list_of_aliases" in cmd:
                 safe_print(yellowify("Aliases:")+f' {", ".join(cmd["list_of_aliases"])}')
