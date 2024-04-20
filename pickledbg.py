@@ -116,6 +116,8 @@ class _Unpickler:
         self.errors = errors
         self.proto = 0
         self.fix_imports = fix_imports
+        self.breakpoints = {}
+        self.skip_next_breakpoint = False
         self.commands = [
             {
                 "description": "Step to the next instruction",
@@ -146,6 +148,8 @@ class _Unpickler:
             {
                 "description": "Set a breakpoint at the specified line number or a specified number",
                 "list_of_aliases": ["breakpoint", "break", "b"],
+                "handler": self.handle_breakpoint,
+                "syntax": "breakpoint [line_number] [function_name]"
             }
         ]
 
@@ -169,6 +173,7 @@ class _Unpickler:
         self.stack = []
         self.memo = {}
         self.append = self.stack.append
+        self.calling_function = []
         self.proto = 0
 
         self.last_command = None
@@ -180,23 +185,55 @@ class _Unpickler:
                 self.handle_input()
         except _Stop as stopinst:
             return stopinst.value
-        
-    def next_instruction(self):
+    
+    def check_for_breakpoint(self, key=b'i', obj=None):
+        print(obj)
+        for i,e in enumerate(([obj] if obj else []) or (self.stack + self.metastack)):
+            print(e, key[0], hasattr(e, "__name__") or hasattr(e, "__qualname__"), self.skip_next_breakpoint)
+            if hasattr(e, "__name__") or hasattr(e, "__qualname__"):
+                if key[0] in (ord('R'), ord('i')):
+                    funcname = e.__name__ if hasattr(e, "__name__") else e.__qualname__
+                    arguments = [self.stack[i]] if key[0] == ord('i') else self.stack[i + 1]
+
+                    if funcname in self.breakpoints:
+                        print("HITTINg")
+                        if not self.skip_next_breakpoint:
+                            self.__file.seek(self.__file.tell() - 1)
+                            self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
+
+                            raise EOFError
+                        self.skip_next_breakpoint = False
+
+    def next_instruction(self, single=False):
         global pickle_disasm
         global disasm_line_no
 
         key = self.read(1)
+        
         if not key:
             raise EOFError
         assert isinstance(key, bytes_types)
 
-        self.dispatch[key[0]](self)
+        try:
+            self.check_for_breakpoint(key)
+            self.dispatch[key[0]](self)
+            disasm_line_no += 1
+            return True
+        except EOFError:
+            self.print_entire_state()
+            return False
 
-        disasm_line_no += 1
+    def handle_step(self, _):
+        if not self.start:
+            safe_print(redify("[!] Must run the debugger first."))
+            return
+    
+        self.print_entire_state() if not self.next_instruction(single=True) else self.print_state()
 
-    def handle_step(self, inp):
-        self.next_instruction()
-        self.print_state()
+
+    def handle_breakpoint(self, inp):
+        function_name = inp[0]
+        self.breakpoints[function_name] = 0
 
     def handle_exit(self, _):
         raise _Stop(None)
@@ -210,10 +247,30 @@ class _Unpickler:
 
         disasm_line_no = 0
         self.start = True
-        while True:
-            self.next_instruction()
-        
+
+        while self.next_instruction(): ...
+
     def handle_continue(self, inp):pass
+
+    def print_entire_state(self):
+        self.skip_next_breakpoint = True
+        self.print_state()
+        if self.calling_function:
+            terminal_width = safe_get_terminal_size()[0]
+            safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-16)]))+cyanify(' arguments ')+grayify('────'))
+            safe_print(f"{blueify(self.calling_function[0])}@{self.calling_function[1]} (")
+            
+            for arg in self.calling_function[2]:
+                to_call = {
+                    "dict": colorize_dict,
+                    "list": colorize_array,
+                    "tuple": colorize_array,
+                    "str": lambda x: pinkify(ascii(x)), 
+                }[safe_type(arg).__name__]
+                safe_print(f"    {to_call(arg)},")
+            safe_print(")")
+
+            self.calling_function = []
 
     def handle_help(self, _):
         terminal_width = safe_get_terminal_size()[0]
@@ -243,10 +300,11 @@ class _Unpickler:
                 raise _Stop(None)
             
         inp = inp or self.last_command
+        parts = inp.split()
         for cmd in self.commands:
-            match inp:
+            match parts[0]:
                 case x if x in cmd["list_of_aliases"]:
-                    cmd["handler"](inp)
+                    cmd["handler"](parts[1:])
                     break
         else:
             safe_print(redify("[!] Invalid command. Type 'help' for a list of available commands."))
@@ -317,7 +375,7 @@ class _Unpickler:
         if tmp != '':
             safe_print('   '+tmp)
             
-        safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width)])))
+        # safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width)])))
 
     # Return a list of items pushed in the stack after last MARK instruction.
     def pop_mark(self):
@@ -602,7 +660,10 @@ class _Unpickler:
     def load_inst(self):
         module = self.readline()[:-1].decode("ascii")
         name = self.readline()[:-1].decode("ascii")
+
         klass = self.find_class(module, name)
+        
+        self.check_for_breakpoint(obj=klass)
         self._instantiate(klass, self.pop_mark())
     dispatch[INST[0]] = load_inst
 
