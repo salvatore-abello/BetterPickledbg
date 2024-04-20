@@ -57,6 +57,7 @@ import _compat_pickle, pickletools
 from types import *
 from opcodes import *
 from colors import *
+from pythondebugger import PythonDebugger
 from unframer import _Unframer
 from errors import UnpicklingError, PickleError, PicklingError, _Stop
 from utils import _getattribute, whichmodule, encode_long, decode_long
@@ -156,6 +157,19 @@ class _Unpickler:
                 "list_of_aliases": ["breakpoint", "break", "b"],
                 "handler": self.handle_breakpoint,
                 "syntax": "breakpoint [line_number] [function_name]"
+            },
+            {
+                "cmd": "pydebugger",
+                "description": "Starts the python debugger",
+                "list_of_aliases": ["pydebugger", "pyd", "py"],
+                "handler": self.python_debugger
+            },
+            {
+                "cmd": "setcfh",
+                "description": "Set the control flow handler to the loaded pickle bytecode.\nThis could be useful when the pickle bytecode uses file.seek to simulate conditions",
+                "list_of_aliases": ["setcfh", "cfh"],
+                "handler": self.set_control_flow_handler,
+                "syntax": "setcfh [control_flow_handler]"
             }
         ]
 
@@ -190,8 +204,20 @@ class _Unpickler:
             while True:
                 self.handle_input()
         except _Stop as stopinst:
-            return stopinst.value
+            safe_print(redify(f"[!] Pickle exited with return value {stopinst.value!r}."))
     
+    def python_debugger(self, _):
+        PythonDebugger(
+            {
+                "stack": self.stack,
+                "metastack": self.metastack,
+                "memo": self.memo
+        }).run()
+
+    def set_control_flow_handler(self, inp):
+        cfhname = inp[0]
+        globals()[cfhname] = self.__file
+
     def check_for_calling_function(self, key, obj=None):
         for i, e in reversed(list(enumerate(([obj] if obj else []) or (self.stack)))):
             if hasattr(e, "__name__") or hasattr(e, "__qualname__"):
@@ -215,6 +241,7 @@ class _Unpickler:
 
                             raise EOFError
                         self.skip_next_breakpoint = False
+                    return
 
     def next_instruction(self, single=False):
         global pickle_disasm
@@ -268,7 +295,10 @@ class _Unpickler:
         
 
     def handle_continue(self, _):
-        while self.next_instruction(): ...
+        try:
+            while self.next_instruction(): ...
+        except KeyboardInterrupt:
+            self.print_state()
 
     def print_entire_state(self):
         self.skip_next_breakpoint = True
@@ -290,9 +320,6 @@ class _Unpickler:
             safe_print(grayify('─'*terminal_width))
 
     def handle_input(self, inp=None):
-        global pickle_disasm
-        global disasm_line_no
-
         if inp is None:
             safe_print((greenify if self.start else redify)("pickledbg>  "), end="")
             try:
@@ -312,48 +339,6 @@ class _Unpickler:
             safe_print(redify("[!] Invalid command. Type 'help' for a list of available commands."))
 
         self.last_command = inp
-
-        # elif inp == "help" or inp == "?":
-        #     self.last_command = inp
-
-        #     terminal_width = safe_get_terminal_size()[0]
-        #     lengths = (terminal_width - len(' pickledbg help'))//2
-        #     safe_print(grayify('─'*lengths)+cyanify(' pickledbg help ')+grayify('─'*lengths))
-
-        #     # start
-        #     safe_print(redify("start"))
-        #     safe_print("Starts the debugger, pointing to the first instruction but not executing it. Must only be ran once. To restart debugging, close the program and run it again. Must also be run before stepping through instructions.")
-        #     safe_print(yellowify("Aliases:")+' run')
-        #     safe_print()
-        #     safe_print(grayify('─'*terminal_width))
-
-        #     # ni
-        #     safe_print(redify("ni"))
-        #     safe_print("Executes the next instruction and shows the updated Pickle Machine state. Must be ran after 'start'.")
-        #     safe_print(yellowify("Aliases:")+' next')
-        #     safe_print()
-        #     safe_print(grayify('─'*terminal_width))
-
-        #     # export 
-        #     safe_print(redify("export"))
-        #     safe_print("Writes the disassembly of the pickle to a file. If no filename is specified, the default is 'out.disasm'.")
-        #     safe_print(yellowify("Syntax:")+' export [filename]')
-        #     safe_print()
-        #     safe_print(grayify('─'*terminal_width))
-
-        #     # help
-        #     safe_print(redify("help"))
-        #     safe_print("Shows this help menu.")
-        #     safe_print(yellowify("Aliases:")+' ?')
-        #     safe_print()
-        #     safe_print(grayify('─'*terminal_width))
-
-        #     # exit
-        #     safe_print(redify("exit"))
-        #     safe_print("Exits the debugger.")
-        #     safe_print(yellowify("Aliases:")+' quit')
-        #     safe_print()
-        #     safe_print(grayify('─'*terminal_width))
 
     def print_state(self):
         safe_system('clear -x')
@@ -377,14 +362,11 @@ class _Unpickler:
         if tmp != '':
             safe_print('   '+tmp)
             
-        # safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width)])))
-
         if self.calling_function:
             terminal_width = safe_get_terminal_size()[0]
             safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-16)]))+cyanify(' arguments ')+grayify('────'))
             safe_print(f"{blueify(self.calling_function[0])}@{self.calling_function[1]} (")
             
-
             arguments = self.calling_function[2][0] if isinstance(self.calling_function[2][0], tuple) else self.calling_function[2]
             for arg in arguments:
                 to_call = {
@@ -959,4 +941,4 @@ if __name__ == "__main__":
         print(redify("[!] Error: could not disassemble pickle file"))
         sys.exit(1)
     
-    _Unpickler(open(sys.argv[1], "rb")).run()
+    _Unpickler(io.BytesIO(open(sys.argv[1], "rb").read())).run()
