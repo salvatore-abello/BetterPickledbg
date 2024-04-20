@@ -1,2 +1,3 @@
 out.disasm
 *.pickle
+__pycache__
