@@ -192,17 +192,23 @@ class _Unpickler:
         except _Stop as stopinst:
             return stopinst.value
     
-    def check_for_breakpoint(self, key=b'i', obj=None):
-        print(obj)
-        for i,e in enumerate(([obj] if obj else []) or (self.stack + self.metastack)):
-            print(e, key[0], hasattr(e, "__name__") or hasattr(e, "__qualname__"), self.skip_next_breakpoint)
+    def check_for_calling_function(self, key, obj=None):
+        for i, e in reversed(list(enumerate(([obj] if obj else []) or (self.stack)))):
             if hasattr(e, "__name__") or hasattr(e, "__qualname__"):
                 if key[0] in (ord('R'), ord('i')):
                     funcname = e.__name__ if hasattr(e, "__name__") else e.__qualname__
-                    arguments = [self.stack[i]] if key[0] == ord('i') else self.stack[i + 1]
+                    arguments = [self.stack[i]] if key[0] == ord('i') else (self.stack[i + 1],)
+                    self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
+                    return 
+
+    def check_for_breakpoint(self, key=b'i', obj=None):
+        for i, e in reversed(list(enumerate(([obj] if obj else []) or (self.stack)))):
+            if hasattr(e, "__name__") or hasattr(e, "__qualname__"):
+                if key[0] in (ord('R'), ord('i')):
+                    funcname = e.__name__ if hasattr(e, "__name__") else e.__qualname__
+                    arguments = [self.stack[i]] if key[0] == ord('i') else (self.stack[i + 1],)
 
                     if funcname in self.breakpoints:
-                        print("HITTINg")
                         if not self.skip_next_breakpoint:
                             self.__file.seek(self.__file.tell() - 1)
                             self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
@@ -215,14 +221,19 @@ class _Unpickler:
         global disasm_line_no
 
         key = self.read(1)
+        prox_key = self.read(1)
+        self.__file.seek(self.__file.tell() - 1)
         
         if not key:
             raise EOFError
         assert isinstance(key, bytes_types)
 
         try:
-            self.check_for_breakpoint(key)
+            if not single: 
+                self.check_for_breakpoint(key)
             self.dispatch[key[0]](self)
+            if single: # ???? this is ugly
+                self.check_for_calling_function(prox_key)
             disasm_line_no += 1
             return True
         except EOFError:
@@ -253,30 +264,15 @@ class _Unpickler:
 
         disasm_line_no = 0
         self.start = True
+        self.handle_continue(None)
+        
 
+    def handle_continue(self, _):
         while self.next_instruction(): ...
-
-    def handle_continue(self, inp):pass
 
     def print_entire_state(self):
         self.skip_next_breakpoint = True
         self.print_state()
-        if self.calling_function:
-            terminal_width = safe_get_terminal_size()[0]
-            safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-16)]))+cyanify(' arguments ')+grayify('────'))
-            safe_print(f"{blueify(self.calling_function[0])}@{self.calling_function[1]} (")
-            
-            for arg in self.calling_function[2]:
-                to_call = {
-                    "dict": colorize_dict,
-                    "list": colorize_array,
-                    "tuple": colorize_array,
-                    "str": lambda x: pinkify(ascii(x)), 
-                }[safe_type(arg).__name__]
-                safe_print(f"    {to_call(arg)},")
-            safe_print(")")
-
-            self.calling_function = []
 
     def handle_help(self, _):
         terminal_width = safe_get_terminal_size()[0]
@@ -382,6 +378,25 @@ class _Unpickler:
             safe_print('   '+tmp)
             
         # safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width)])))
+
+        if self.calling_function:
+            terminal_width = safe_get_terminal_size()[0]
+            safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-16)]))+cyanify(' arguments ')+grayify('────'))
+            safe_print(f"{blueify(self.calling_function[0])}@{self.calling_function[1]} (")
+            
+
+            arguments = self.calling_function[2][0] if isinstance(self.calling_function[2][0], tuple) else self.calling_function[2]
+            for arg in arguments:
+                to_call = {
+                    "dict": colorize_dict,
+                    "list": colorize_array,
+                    "tuple": colorize_array,
+                    "str": lambda x: pinkify(ascii(x)), 
+                }.get(safe_type(arg).__name__, lambda x: yellowify(ascii(x)))
+                safe_print(f"    {to_call(arg)},")
+            safe_print(")")
+
+            self.calling_function = []
 
     # Return a list of items pushed in the stack after last MARK instruction.
     def pop_mark(self):
