@@ -61,6 +61,7 @@ from .pythondebugger import PythonDebugger
 from .unframer import _Unframer
 from .errors import UnpicklingError, PickleError, PicklingError, _Stop
 from .utils import _getattribute, whichmodule, encode_long, decode_long
+import platform
 
 ### GLOBALS ###
 pickle_bytes = b''
@@ -252,7 +253,7 @@ class _Unpickler:
                 for funcname, data in self.breakpoints.items():
                     safe_print(f"    {blueify(funcname)} - {cyanify(data['hits'])} hits")
                 safe_print()
-            case "cfh" | "control_flow_handler":
+            case "cfh" | "control_flow_handler": # TODO: Print the cfh name, not the value
                 safe_print(yellowify("Control Flow Handler:"))
                 safe_print(f"    {self.__file}")
             case _:
@@ -329,8 +330,8 @@ class _Unpickler:
     def handle_exit(self, _):
         raise _Stop(None)
 
+    # TODO: Remove globals, use self.disasm_line_no for example
     def handle_run(self, _): # TODO: Fix double run which causes a breakpoint not to be hit
-        global pickle_disasm
         global disasm_line_no
 
         self.load()
@@ -387,7 +388,7 @@ class _Unpickler:
         self.last_command = inp
 
     def print_state(self):
-        safe_system('clear -x')
+        safe_system("cls" if platform.system() == "Windows" else "clear -x")
 
         ### STACK & MEMO ###
         terminal_width = safe_get_terminal_size()[0]
