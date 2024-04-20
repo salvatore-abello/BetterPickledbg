@@ -1,5 +1,4 @@
-from colors import *
-import typing
+from .colors import *
 import builtins
 
 

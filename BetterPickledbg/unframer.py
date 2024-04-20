@@ -1,5 +1,5 @@
 import io
-from errors import UnpicklingError
+from .errors import UnpicklingError
 
 
 class _Unframer:

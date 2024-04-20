@@ -55,12 +55,12 @@ from struct import unpack
 from copyreg import _inverted_registry, _extension_cache
 import _compat_pickle, pickletools
 from types import *
-from opcodes import *
-from colors import *
-from pythondebugger import PythonDebugger
-from unframer import _Unframer
-from errors import UnpicklingError, PickleError, PicklingError, _Stop
-from utils import _getattribute, whichmodule, encode_long, decode_long
+from .opcodes import *
+from .colors import *
+from .pythondebugger import PythonDebugger
+from .unframer import _Unframer
+from .errors import UnpicklingError, PickleError, PicklingError, _Stop
+from .utils import _getattribute, whichmodule, encode_long, decode_long
 
 ### GLOBALS ###
 pickle_bytes = b''
@@ -182,6 +182,7 @@ class _Unpickler:
         self.load()
 
     def load(self):
+        global pickle_disasm
         """Read a pickled object representation from the open file.
 
         Return the reconstituted object hierarchy specified in the file.
@@ -206,6 +207,20 @@ class _Unpickler:
 
         self.last_command = None
         self.start = False
+
+        try: # Figure out where to put all of this
+            tmpdir = tempfile.gettempdir()
+            tmpname = tmpdir + '/tmp' + secrets.token_hex(6)
+            self.__file.seek(0)
+            with open(tmpname, "w") as tmpfile:
+                pickletools.dis(self.__file, out=tmpfile)
+            self.__file.seek(0)
+            pickle_disasm = open(tmpname, "r").read().split('\n')[:-2]
+            __import__('os').remove(tmpname)
+        except Exception as e:
+            print(e)
+            print(redify("[!] Error: could not disassemble pickle file"))
+            sys.exit(1)
 
     def run(self):
         try:
@@ -262,7 +277,8 @@ class _Unpickler:
                     if funcname in self.breakpoints:
                         if not self.breakpoints[funcname]["skip_next_breakpoint"]:
                             self.last_funcname = funcname
-                            self.__file.seek(self.__file.tell() - 1)
+                            if key[0] != ord('i'):
+                                self.__file.seek(self.__file.tell() - 1)
                             self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
 
                             self.breakpoints[funcname]["hits"] += 1
@@ -313,7 +329,7 @@ class _Unpickler:
     def handle_exit(self, _):
         raise _Stop(None)
 
-    def handle_run(self, _):
+    def handle_run(self, _): # TODO: Fix double run which causes a breakpoint not to be hit
         global pickle_disasm
         global disasm_line_no
 
@@ -324,7 +340,6 @@ class _Unpickler:
         self.start = True
         self.handle_continue(None)
         
-
     def handle_continue(self, _):
         try:
             while self.next_instruction(): ...
@@ -961,15 +976,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # get pickletools disassembly
-    try:
-        tmpdir = tempfile.gettempdir()
-        tmpname = tmpdir + '/tmp' + secrets.token_hex(6)
-        with open(tmpname, "w") as tmpfile:
-            pickletools.dis(pickle_file, out=tmpfile)
-        pickle_disasm = open(tmpname, "r").read().split('\n')[:-2]
-        __import__('os').remove(tmpname)
-    except:
-        print(redify("[!] Error: could not disassemble pickle file"))
-        sys.exit(1)
+
     
     _Unpickler(io.BytesIO(open(sys.argv[1], "rb").read())).run()
