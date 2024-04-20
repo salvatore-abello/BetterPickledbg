@@ -118,7 +118,6 @@ class _Unpickler:
         self.proto = 0
         self.fix_imports = fix_imports
         self.breakpoints = {}
-        self.skip_next_breakpoint = False
         self.commands = [
             {
                 "cmd": "step",
@@ -170,6 +169,13 @@ class _Unpickler:
                 "list_of_aliases": ["setcfh", "cfh"],
                 "handler": self.set_control_flow_handler,
                 "syntax": "setcfh [control_flow_handler]"
+            },
+            {
+                "cmd": "info",
+                "description": "Prints the current state of something (Eg. breakpoints)",
+                "list_of_aliases": ["info", "i"],
+                "handler": self.handle_info,
+                "syntax": "info [something]"
             }
         ]
 
@@ -193,6 +199,7 @@ class _Unpickler:
         self.stack = []
         self.memo = {}
         self.last_funcname = None
+        self.skip_next_breakpoint = False
         self.append = self.stack.append
         self.calling_function = []
         self.proto = 0
@@ -219,6 +226,23 @@ class _Unpickler:
         cfhname = inp[0]
         globals()[cfhname] = self.__file
 
+    def handle_info(self, inp):
+        something = inp[0]
+
+        match something:
+            case "b" | "breakpoint" | "breakpoints":
+                terminal_width = safe_get_terminal_size()[0]
+                lengths = (terminal_width - len(' info'))//2
+                safe_print(grayify('─'*lengths)+cyanify(' info ')+grayify('─'*lengths))
+                for funcname, data in self.breakpoints.items():
+                    safe_print(f"    {blueify(funcname)} - {cyanify(data['hits'])} hits")
+                safe_print()
+            case "cfh" | "control_flow_handler":
+                safe_print(yellowify("Control Flow Handler:"))
+                safe_print(f"    {self.__file}")
+            case _:
+                safe_print(redify(f"[!] Invalid argument {something}."))
+
     def check_for_calling_function(self, key, obj=None):
         for i, e in reversed(list(enumerate(([obj] if obj else []) or (self.stack)))):
             if hasattr(e, "__name__") or hasattr(e, "__qualname__"):
@@ -240,6 +264,8 @@ class _Unpickler:
                             self.last_funcname = funcname
                             self.__file.seek(self.__file.tell() - 1)
                             self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
+
+                            self.breakpoints[funcname]["hits"] += 1
 
                             raise EOFError
                         self.breakpoints[funcname]["skip_next_breakpoint"] = False
@@ -280,7 +306,7 @@ class _Unpickler:
     def handle_breakpoint(self, inp):
         function_name = inp[0]
         self.breakpoints[function_name] = {
-            "number": 0,
+            "hits": 0,
             "skip_next_breakpoint": False
         }
 
