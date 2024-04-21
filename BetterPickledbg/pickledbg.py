@@ -205,6 +205,9 @@ class _Unpickler:
         self.append = self.stack.append
         self.calling_function = []
         self.proto = 0
+        self.last_load_inst = ()
+        self.__clear_breakpoints()
+
 
         self.last_command = None
         self.start = False
@@ -230,6 +233,11 @@ class _Unpickler:
         except _Stop as stopinst:
             safe_print(redify(f"[!] Pickle exited with return value {stopinst.value!r}."))
     
+    def __clear_breakpoints(self):
+        for funcname in self.breakpoints:
+            self.breakpoints[funcname]["hits"] = 0
+            self.breakpoints[funcname]["skip_next_breakpoint"] = False
+
     def python_debugger(self, _):
         PythonDebugger(
             {
@@ -278,8 +286,12 @@ class _Unpickler:
                     if funcname in self.breakpoints:
                         if not self.breakpoints[funcname]["skip_next_breakpoint"]:
                             self.last_funcname = funcname
-                            if key[0] != ord('i'):
-                                self.__file.seek(self.__file.tell() - 1)
+                            self.__file.seek(
+                                self.__file.tell() - 1 \
+                                    if key[0] == ord('R') else 
+                                self.__file.tell() - len(self.last_load_inst[0]) - len(self.last_load_inst[1]) - 3
+                            )
+
                             self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
 
                             self.breakpoints[funcname]["hits"] += 1
@@ -331,7 +343,7 @@ class _Unpickler:
         raise _Stop(None)
 
     # TODO: Remove globals, use self.disasm_line_no for example
-    def handle_run(self, _): # TODO: Fix double run which causes a breakpoint not to be hit
+    def handle_run(self, _):
         global disasm_line_no
 
         self.load()
@@ -711,6 +723,7 @@ class _Unpickler:
         module = self.readline()[:-1].decode("ascii")
         name = self.readline()[:-1].decode("ascii")
 
+        self.last_load_inst = (module, name)
         klass = self.find_class(module, name)
         
         self.check_for_breakpoint(obj=klass)

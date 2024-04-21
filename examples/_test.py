@@ -6,7 +6,7 @@ from pickleassem import PickleAssembler
 
 pa = PickleAssembler(proto=4)
 pa.push_mark()
-pa.util_push('timeout 5')
+pa.util_push('invalid')
 pa.build_inst('os', 'system')
 payload = pa.assemble()
 print(payload)
