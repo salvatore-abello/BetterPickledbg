@@ -1,10 +1,5 @@
-import io
 import sys
-import secrets
-import tempfile
-import pickletools
 from BetterPickledbg import _Unpickler
-from BetterPickledbg.colors import *
 
 
 def main():
