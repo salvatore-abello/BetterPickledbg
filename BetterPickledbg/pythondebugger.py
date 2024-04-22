@@ -5,7 +5,12 @@ import builtins
 class PythonDebugger:
     def __init__(self, other):
         self.other = other
+        self.other.update({"dump": self.__dump})
     
+    def __dump(self):
+        print("TODO IMPLEMENT THIS")
+        return 
+
     def run(self):
         while True:
             try:
