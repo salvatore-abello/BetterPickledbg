@@ -286,12 +286,13 @@ class _Unpickler:
             sys.exit(1)
 
     def run(self):
-        try:
-            while True:
+        while True:
+            try:
                 self.handle_input()
-        except _Stop as stopinst:
-            safe_print(redify(f"[!] Pickle exited with return value {stopinst.value!r}."))
-    
+            except _Stop as stopinst:
+                self.start = False
+                safe_print(redify(f"[!] Pickle exited with return value {stopinst.value!r}."))
+        
     def __clear_breakpoints(self):
         for funcname in self.breakpoints:
             self.breakpoints[funcname]["hits"] = 0
