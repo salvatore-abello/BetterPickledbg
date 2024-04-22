@@ -120,6 +120,7 @@ class _Unpickler:
         self.cfhname = None
         self.fix_imports = fix_imports
         self.breakpoints = {}
+        self.continue_counter = 0
         self.commands = [
             {
                 "cmd": "step",
@@ -359,7 +360,13 @@ class _Unpickler:
                                 "hits": 0,
                                 "skip_next_breakpoint": False
                             }
+
                         if not self.breakpoints[funcname]["skip_next_breakpoint"]:
+                            self.breakpoints[funcname]["hits"] += 1
+                            if self.continue_counter > 0:
+                                self.continue_counter -= 1
+                                return
+                            
                             self.last_funcname = funcname
                             self.__file.seek(
                                 self.__file.tell() - 1 \
@@ -368,8 +375,6 @@ class _Unpickler:
                             )
 
                             self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
-
-                            self.breakpoints[funcname]["hits"] += 1
 
                             raise EOFError
                         self.breakpoints[funcname]["skip_next_breakpoint"] = False
@@ -440,7 +445,14 @@ class _Unpickler:
         self.start = True
         self.handle_continue(None)
         
-    def handle_continue(self, _):
+    def handle_continue(self, inp):
+        if inp and len(inp) == 1:
+            if not inp[0].isdigit():
+                safe_print(redify(f"[!] Invalid argument {inp[0]!r}."))
+                return
+            
+            self.continue_counter = int(inp[0])
+
         if not self.start:
             safe_print(redify("[!] Must run the debugger first."))
             return
