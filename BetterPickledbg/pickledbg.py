@@ -229,7 +229,7 @@ class _Unpickler:
 
         if not safe_path.exists(filename):
             safe_print(redify(f"[!] {filename!r}: No such file or directory."))
-            sys.exit(-1)
+            return 
 
         safe_print(yellowify(f"[*] Loading {filename!r}"))
         
