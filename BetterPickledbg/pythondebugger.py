@@ -22,7 +22,7 @@ class PythonDebugger:
                         try:
                             result = eval(code, __builtins__, self.other)
                         except SyntaxError:
-                            result = exec(code, __builtins__, self.other)
+                            result = exec(code, __builtins__, self.other) # This returns None
 
                 match type(result):
                     case builtins.dict:
