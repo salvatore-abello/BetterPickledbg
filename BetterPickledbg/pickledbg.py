@@ -1,33 +1,8 @@
 #!/usr/bin/env python3
 
-#######################################################################################
-# 
-# pickledbg - a simple Python pickle debugger
-# 
-# The current pickle source code (https://github.com/python/cpython/blob/3.11/Lib/pickle.py) 
-# was used as the framework for this debugger, only adding in code and making minor 
-# modifications to print out the state and handle commands. The implementation of each 
-# opcode was untouched to ensure it behaves exactly as it would when normally being 
-# unpickled. The format and designed was meant to look and function similar to GEF, 
-# including color schemes.
-
-# Since pickles may be unloaded in a custom environment (extra modules imported, 
-# builtins modified/removed, etc.), a short section exists in the source code to add in 
-# that custom code. This should help simulate the unpickling process in an environment 
-# as close to the real-world one as possible. In addition, some builtins may be removed 
-# or overwritten either in the custom code or during the unpickling process, so 
-# "copies" of several builtins (such as `print`, `input`, `bool`, etc.) were created, 
-# and those copies are used inside any custom code added to the pickle source code. 
-# This ensures that debugging functionality will still work properly even if the 
-# environment is changed.
-# 
-#######################################################################################
-
-
-
 ### SAFE FUNCTIONS ###
 # normal builtins are renamed so if overwritten during the pickle unload, they can still be accessed
-from os import system as safe_system
+from os import system as safe_system, stat as safe_stat
 from os import get_terminal_size as safe_get_terminal_size, path as safe_path
 safe_print = print
 safe_input = input
@@ -39,27 +14,21 @@ safe_ascii = ascii
 safe_type = type
 safe_len = len
 safe_open = open
-
-
-
-############# INSERT CUSTOM CODE HERE #############
-
-
-
-################# END CUSTOM CODE #################
+safe_exit = exit
 
 
 ### IMPORTS ###
 import sys, io, codecs, tempfile, secrets
 from struct import unpack
 from copyreg import _inverted_registry, _extension_cache
-import _compat_pickle, pickletools
+import _compat_pickle
+from . import pickletools
 from types import *
 from .opcodes import *
 from .colors import *
 from .pythondebugger import PythonDebugger
 from .unframer import _Unframer
-from .errors import UnpicklingError, PickleError, PicklingError, _Stop
+from .errors import UnpicklingError, PickleError, PicklingError, _Stop, _Exit
 from .utils import _getattribute, whichmodule, encode_long, decode_long
 import platform
 
@@ -68,7 +37,9 @@ pickle_bytes = b''
 bytes_types = (bytes, bytearray)
 HIGHEST_PROTOCOL = 5
 pickle_disasm = []
-disasm_line_no = 0
+_NoValue = object()
+
+# TODO: pickletools.dis is broken, fix it by putting the patched version inside this folder
 
 class _Unpickler:
     def __init__(self, file, *, fix_imports=True,
@@ -110,6 +81,7 @@ class _Unpickler:
         default to 'ASCII' and 'strict', respectively. *encoding* can be
         'bytes' to read these 8-bit string instances as bytes objects.
         """
+        
         self.filename = file
         self._buffers = iter(buffers) if buffers is not None else None
         self.encoding = encoding
@@ -151,7 +123,7 @@ class _Unpickler:
                 "description": "Continue executing until the next breakpoint",
                 "list_of_aliases": ["continue", "c"],
                 "handler": self.handle_continue,
-                "syntax": "continue [number_of_skipped_breakpoints]"
+                "syntax": "continue [number_of_breakpoints_to_skip]"
             },
             {
                 "cmd": "breakpoint",
@@ -193,18 +165,29 @@ class _Unpickler:
                 "list_of_aliases": ["delete", "del", "d", "remove"],
                 "handler": self.handle_delete,
                 "syntax": "delete [breakpoint/cfh]"
+            },
+            {
+                "cmd": "disassemble",
+                "description": "Prints the disassembly of the pickle. Optionally, writes the disassembly to a file.",
+                "list_of_aliases": ["disassemble", "dis", "disasm", "disass"],
+                "handler": self.handle_print_disassembly,
+                "syntax": "disassemble [output-file]"
             }
         ]
+
+    def handle_print_disassembly(self, inp):
+        if not inp:
+            return self.print_entire_disassembled_pickle(safe_get_terminal_size()[0])
+        
+        with open(f"{inp[0]}.out", "w") as f:
+            f.write('\n'.join(pickle_disasm))
+        
+        print(greenify(f"[+] Disassembly written to {inp[0]}.out"))
 
     def handle_delete(self, inp):
         if len(inp) == 0:
             safe_print(redify(f"[!] Invalid syntax. Type 'help' for more information."))
             return
-
-        # if inp[0] == '*':
-        #     self.breakpoints = {}
-        #     self.cfhname = None
-        #     return
 
         something = inp[0]
         who = inp[1] if len(inp) > 1 else None
@@ -233,17 +216,21 @@ class _Unpickler:
 
         safe_print(yellowify(f"[*] Loading {filename!r}"))
         
-        with open(filename, "rb") as fp:
-            self.__file = io.BytesIO(fp.read())
+        if safe_stat(filename).st_size == 0:
+            print(redify("Error: empty file"))
+            return 
+        
+        with open(filename, "rb") as fp: 
+            self.__file = io.BufferedReader(io.BytesIO(fp.read()))
 
         self._file_readline = self.__file.readline
         self._file_read = self.__file.read
 
         safe_print(greenify(f"[+] Done!"))
         
+        self.load_disassembled_pickle()
 
     def load(self):
-        global pickle_disasm
         """Read a pickled object representation from the open file.
 
         Return the reconstituted object hierarchy specified in the file.
@@ -268,35 +255,53 @@ class _Unpickler:
         self.last_load_inst = ()
         self.__clear_breakpoints()
 
-
         self.last_command = None
         self.start = False
+        self.disasm_line_no = 0
+        
+        setattr(safe_import("builtins"), "exit", self.__hook_builtin_exit)
 
+
+    def load_disassembled_pickle(self):
+        global pickle_disasm # TODO: delete this global variable
+        
         try: # Figure out where to put all of this
             tmpdir = tempfile.gettempdir()
             tmpname = tmpdir + '/tmp' + secrets.token_hex(6)
             self.__file.seek(0)
+            print(tmpname)
             with open(tmpname, "w") as tmpfile:
                 pickletools.dis(self.__file, out=tmpfile)
-            self.__file.seek(0)
-            pickle_disasm = open(tmpname, "r").read().split('\n')[:-2]
-            __import__('os').remove(tmpname)
         except Exception as e:
-            print(redify("[!] Error: could not disassemble pickle file"))
-            sys.exit(1)
+            print(redify(f"[!] Error: could not disassemble the entire pickle (Reason: {e.__class__.__name__}: {e!r})"))
+
+        self.__file.seek(0)
+        pickle_disasm = open(tmpname, "r").read().split('\n')[:-2]
+        safe_import('os').remove(tmpname)        
 
     def run(self):
+        self.handle_file([self.filename])
+        
         while True:
+            # TODO: handle IndexError
             try:
                 self.handle_input()
             except _Stop as stopinst:
+                if not self.start:
+                    self.handle_exit()
                 self.start = False
                 safe_print(redify(f"[!] Pickle exited with return value {stopinst.value!r}."))
+            except _Exit as e:
+                self.start = False
+                safe_print(redify(f"[!] Pickle called exit({e.value!r})."))
         
     def __clear_breakpoints(self):
         for funcname in self.breakpoints:
             self.breakpoints[funcname]["hits"] = 0
             self.breakpoints[funcname]["skip_next_breakpoint"] = False
+
+    def __hook_builtin_exit(self, x):
+        raise _Exit(x)
 
     def python_debugger(self, _):
         if not self.start:
@@ -310,7 +315,8 @@ class _Unpickler:
                 "memo": self.memo
         }).run()
 
-    def set_control_flow_handler(self, inp): # this is a bit bugged because pickletools disassembles until it finds a STOP opcode
+    def set_control_flow_handler(self, inp):
+        # TODO: change disasm_line_no according to the value of f.seek (and maybe other functions idk)
         if not hasattr(self, "_Unpickler__file"):
             safe_print(redify("[!] No file loaded."))
             return
@@ -327,6 +333,7 @@ class _Unpickler:
                 terminal_width = safe_get_terminal_size()[0]
                 lengths = (terminal_width - len(' info'))//2
                 safe_print(grayify('─'*lengths)+cyanify(' info ')+grayify('─'*lengths))
+                
                 for funcname, data in self.breakpoints.items():
                     safe_print(f"    {blueify(funcname)} - {cyanify(data['hits'])} hits")
                 safe_print()
@@ -340,18 +347,24 @@ class _Unpickler:
                 safe_print(redify(f"[!] Invalid argument {something}."))
 
     def check_for_calling_function(self, key, obj=None):
-        for i, e in reversed(list(enumerate(([obj] if obj else []) or (self.stack)))):
+        if key[0] not in (ord('R'), ord('i')):
+            return
+        
+        items = [obj] if obj else self.stack
+        for i, e in reversed(list(enumerate(items))):
             if hasattr(e, "__name__") or hasattr(e, "__qualname__"):
-                if key[0] in (ord('R'), ord('i')):
-                    funcname = e.__name__ if hasattr(e, "__name__") else e.__qualname__
-                    arguments = [self.stack[i]] if key[0] == ord('i') else (self.stack[i + 1],)
-                    self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
-                    return 
+                arguments = [self.stack[i]] if key[0] == ord('i') else (self.stack[i + 1],)
+                self.calling_function = (e.__qualname__, whichmodule(e, e.__qualname__), arguments)
+                return
 
     def check_for_breakpoint(self, key=b'i', obj=None):
-        for i, e in reversed(list(enumerate(([obj] if obj else []) or (self.stack)))):
+        items = [obj] if obj else self.stack
+        
+        for i, e in reversed(list(enumerate(items))):
             if hasattr(e, "__name__") or hasattr(e, "__qualname__"):
                 if key[0] in (ord('R'), ord('i')):
+                    
+                    # TODO: should breakpoints be more specific? (eg. instead of putting a breakpoint on join, put it on str.join)
                     funcname = e.__name__ if hasattr(e, "__name__") else e.__qualname__
                     arguments = [self.stack[i]] if key[0] == ord('i') else (self.stack[i + 1],)
 
@@ -369,25 +382,25 @@ class _Unpickler:
                                 return
                             
                             self.last_funcname = funcname
-                            self.__file.seek(
-                                self.__file.tell() - 1 \
-                                    if key[0] == ord('R') else 
-                                self.__file.tell() - len(self.last_load_inst[0]) - len(self.last_load_inst[1]) - 3
-                            )
-
-                            self.calling_function = (funcname, e.__module__, arguments) if hasattr(e, "__module__") else (*e.__qualname__.split("."), arguments)
+                            f = self._unframer.current_frame or self.__file
+                            
+                            position = f.tell()
+                            
+                            if key[0] == ord('R'):
+                                f.seek(position - 1)
+                            else:
+                                f.seek(position - len(self.last_load_inst[0]) - len(self.last_load_inst[1]) - 3)
+                                                        
+                            self.calling_function = (e.__qualname__, whichmodule(e, e.__qualname__), arguments)
 
                             raise EOFError
                         self.breakpoints[funcname]["skip_next_breakpoint"] = False
                     return
 
     def next_instruction(self, single=False):
-        global disasm_line_no
-
         key = self.read(1)
-        prox_key = self.read(1)
-        self.__file.seek(self.__file.tell() - 1)
-        
+        prox_key = self.__file.peek(1)
+
         if not key:
             raise EOFError
         assert isinstance(key, bytes_types)
@@ -395,10 +408,11 @@ class _Unpickler:
         try:
             if not single: 
                 self.check_for_breakpoint(key)
+
             self.dispatch[key[0]](self)
-            if single: # ???? this is ugly
+            if single: # ???? 
                 self.check_for_calling_function(prox_key)
-            disasm_line_no += 1
+            self.disasm_line_no += 1
             return True
         except EOFError:
             self.print_entire_state()
@@ -410,7 +424,6 @@ class _Unpickler:
             return
     
         self.print_entire_state() if not self.next_instruction(single=True) else self.print_state()
-
 
     def handle_breakpoint(self, inp):
         if len(inp) == 0:
@@ -427,22 +440,19 @@ class _Unpickler:
             "skip_next_breakpoint": False
         }
 
-    def handle_exit(self, _):
-        raise _Stop(None)
+    def handle_exit(self, *_):
+        sys.exit(0)
 
-    # TODO: Remove globals, use self.disasm_line_no for example
+    # TODO: Remove globals, use self.self.disasm_line_no for example
     def handle_run(self, _):
-        global disasm_line_no
-
         if not hasattr(self, "_Unpickler__file"):
             safe_print(redify("[!] No file loaded."))
             return
         
-        # TODO: handle not loaded file
         self.load()
         self.__file.seek(0)
 
-        disasm_line_no = 0
+        self.disasm_line_no = 0
         self.start = True
         self.handle_continue(None)
         
@@ -482,26 +492,52 @@ class _Unpickler:
             safe_print()
             safe_print(grayify('─'*terminal_width))
 
-    def handle_input(self, inp=None):
-        if inp is None:
-            safe_print((greenify if self.start else redify)("pickledbg>  "), end="")
-            try:
-                inp = safe_input()
-            except (EOFError, KeyboardInterrupt):
-                safe_print(redify("\n[+] Exiting..."))
-                raise _Stop(None)
+    def handle_input(self):
+        try:
+            inp = safe_input((greenify if self.start else redify)("pickledbg>  "))
+        except (EOFError, KeyboardInterrupt):
+            safe_print(redify("\n[+] Exiting..."))
+            raise _Stop(None)
             
-        inp = inp or self.last_command
+        inp = inp or getattr(self, "last_command", None)
+        
+        if not inp:
+            return
+        
         parts = inp.split()
         for cmd in self.commands:
             match parts[0]:
                 case x if x in cmd["list_of_aliases"]:
                     cmd["handler"](parts[1:])
+                    self.last_command = inp
                     break
         else:
             safe_print(redify("[!] Invalid command. Type 'help' for a list of available commands."))
 
-        self.last_command = inp
+        
+    def print_disassembled_pickle(self, terminal_width):
+        try:
+            safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-16)]))+cyanify(' disassembly ')+grayify('───'))
+            
+            tmp = '\n   '.join(pickle_disasm[safe_max(0,self.disasm_line_no-3):self.disasm_line_no])
+            if tmp != '':
+                safe_print('   '+grayify(tmp))
+
+            safe_print(greenify('-> '+pickle_disasm[self.disasm_line_no]))
+            tmp = '\n   '.join(pickle_disasm[self.disasm_line_no+1:self.disasm_line_no+4])
+            if tmp != '':
+                safe_print('   '+tmp)
+        
+        except IndexError as e:
+            safe_print(redify(f"[!] Error during disassembling the pickle ({e.__class__.__name__}): {e}"))
+
+    def print_entire_disassembled_pickle(self, terminal_width):
+        safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-16)]))+cyanify(' disassembly ')+grayify('───'))
+        for i, line in enumerate(pickle_disasm):
+            if self.start and i == self.disasm_line_no:
+                safe_print(greenify('-> ' + line))
+            else:
+                safe_print('   ' + line) 
 
     def print_state(self):
         safe_system("cls" if platform.system() == "Windows" else "clear -x")
@@ -510,24 +546,11 @@ class _Unpickler:
         terminal_width = safe_get_terminal_size()[0]
         safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-17)]))+cyanify(' stack & memo ')+grayify('───'))
         safe_print(blueify("stack     ")+": ", colorize_array(self.stack))
-        if self.metastack != []: safe_print(blueify("metastack ")+": ", colorize_array(self.metastack))
+        if self.metastack != []:
+            safe_print(blueify("metastack ")+": ", colorize_array(self.metastack))
         safe_print(blueify("memo      ")+": ", colorize_dict(self.memo))
 
-        ### DISASSEMBLY ###
-        try:
-            safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-16)]))+cyanify(' disassembly ')+grayify('───'))
-            
-            tmp = '\n   '.join(pickle_disasm[safe_max(0,disasm_line_no-3):disasm_line_no])
-            if tmp != '':
-                safe_print('   '+grayify(tmp))
-
-            safe_print(greenify('-> '+pickle_disasm[disasm_line_no]))
-            tmp = '\n   '.join(pickle_disasm[disasm_line_no+1:disasm_line_no+4])
-            if tmp != '':
-                safe_print('   '+tmp)
-        
-        except IndexError as e:
-            safe_print(redify(f"[!] Error during disassembling the pickle ({e.__class__.__name__}): {e}"))
+        self.print_disassembled_pickle(terminal_width)
 
         if self.calling_function:
             terminal_width = safe_get_terminal_size()[0]
@@ -568,6 +591,7 @@ class _Unpickler:
 
     def load_frame(self):
         frame_size, = unpack('<Q', self.read(8))
+            
         if frame_size > sys.maxsize:
             raise ValueError("frame size > sys.maxsize: %d" % frame_size)
         self._unframer.load_frame(frame_size)
@@ -757,7 +781,8 @@ class _Unpickler:
 
     def load_short_binunicode(self):
         len = self.read(1)[0]
-        self.append(str(self.read(len), 'utf-8', 'surrogatepass'))
+        readed = self.read(len)
+        self.append(str(readed, 'utf-8', 'surrogatepass'))
     dispatch[SHORT_BINUNICODE[0]] = load_short_binunicode
 
     def load_tuple(self):
@@ -822,7 +847,7 @@ class _Unpickler:
                 value = klass(*args)
             except TypeError as err:
                 raise TypeError("in constructor for %s: %s" %
-                                (klass.__name__, str(err)), sys.exc_info()[2])
+                               (klass.__name__, str(err)), err.__traceback__)
         else:
             value = klass.__new__(klass)
         self.append(value)
@@ -914,7 +939,7 @@ class _Unpickler:
                 module, name = _compat_pickle.NAME_MAPPING[(module, name)]
             elif module in _compat_pickle.IMPORT_MAPPING:
                 module = _compat_pickle.IMPORT_MAPPING[module]
-        __import__(module, level=0)
+        safe_import(module, level=0)
         if self.proto >= 4:
             return _getattribute(sys.modules[module], name)[0]
         else:
@@ -1015,6 +1040,7 @@ class _Unpickler:
         # Even if the PEP 307 requires extend() and append() methods,
         # fall back on append() if the object has no extend() method
         # for backward compatibility.
+        
         append = list_obj.append
         for item in items:
             append(item)
@@ -1050,8 +1076,8 @@ class _Unpickler:
         stack = self.stack
         state = stack.pop()
         inst = stack[-1]
-        setstate = getattr(inst, "__setstate__", None)
-        if setstate is not None:
+        setstate = getattr(inst, "__setstate__", _NoValue)
+        if setstate is not _NoValue:
             setstate(state)
             return
         slotstate = None

@@ -10,3 +10,7 @@ class UnpicklingError(PickleError):
 class _Stop(Exception):
     def __init__(self, value):
         self.value = value
+        
+class _Exit(Exception):
+    def __init__(self, value):
+        self.value = value

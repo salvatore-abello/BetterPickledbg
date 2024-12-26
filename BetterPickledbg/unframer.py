@@ -55,4 +55,4 @@ class _Unframer:
         if self.current_frame and self.current_frame.read() != b'':
             raise UnpicklingError(
                 "beginning of a new frame before end of current frame")
-        self.current_frame = io.BytesIO(self.file_read(frame_size))
+        self.current_frame = io.BufferedReader(io.BytesIO(self.file_read(frame_size)))

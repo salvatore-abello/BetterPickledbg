@@ -3,26 +3,31 @@ import builtins
 
 
 class PythonDebugger:
-    def __init__(self, other):
-        self.other = other
-        self.other.update({"dump": self.__dump})
+    def __init__(self, context):
+        self.context = context
+        self.builtins = __builtins__.copy()
+        self.builtins.update({"dump": self.__dump})  
     
     def __dump(self):
-        print("TODO IMPLEMENT THIS")
+        for key, value in self.context.items():
+            print(f"{key} = {value}")
         return 
 
     def run(self):
         while True:
             try:
-                code = input(greenify("pyd @ "))
+                code = input(greenify("pyd >>> "))
                 match code:
                     case "exit" | "quit" | "q":
                         raise KeyboardInterrupt
+                    case "dump":
+                        self.__dump()
+                        continue
                     case _:
                         try:
-                            result = eval(code, __builtins__, self.other)
+                            result = eval(code, self.builtins, self.context)
                         except SyntaxError:
-                            result = exec(code, __builtins__, self.other) # This returns None
+                            result = exec(code, self.builtins, self.context)
 
                 match type(result):
                     case builtins.dict:
@@ -31,6 +36,8 @@ class PythonDebugger:
                         print(result)
                     case builtins.list | builtins.tuple:
                         print(colorize_array(result))
+                    case _:
+                        print(result)
                 
             except Exception as e:
                 print(redify(f"{e.__class__.__name__}: {e}"))
