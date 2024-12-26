@@ -1,4 +1,4 @@
-# What's new in 1.0.0 (??-??-????)
+# What's new in 1.0.0 (26-12-2024)
 
 - Improved `pydebugger` command
 - `disasemble` command added
