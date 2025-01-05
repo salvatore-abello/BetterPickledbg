@@ -16,7 +16,6 @@ safe_len = len
 safe_open = open
 safe_exit = exit
 
-
 ### IMPORTS ###
 import sys, io, codecs, tempfile, secrets
 from struct import unpack
@@ -29,7 +28,7 @@ from .colors import *
 from .pythondebugger import PythonDebugger
 from .unframer import _Unframer
 from .errors import UnpicklingError, PickleError, PicklingError, _Stop, _Exit
-from .utils import _getattribute, whichmodule, encode_long, decode_long
+from .utils import *
 import platform
 
 ### GLOBALS ###
@@ -143,28 +142,28 @@ class _Unpickler:
                 "description": "Set the control flow handler to the loaded pickle bytecode.\nThis could be useful when the pickle bytecode uses file.seek to simulate conditions",
                 "list_of_aliases": ["setcfh", "cfh"],
                 "handler": self.set_control_flow_handler,
-                "syntax": "setcfh [control_flow_handler]"
+                "syntax": "setcfh control_flow_handler"
             },
             {
                 "cmd": "info",
                 "description": "Prints the current state of something (Eg. breakpoints)",
                 "list_of_aliases": ["info", "i"],
                 "handler": self.handle_info,
-                "syntax": "info [something]"
+                "syntax": "info something"
             },
             {
                 "cmd": "file",
                 "description": "Loads a file",
                 "list_of_aliases": ["file", "f"],
                 "handler": self.handle_file,
-                "syntax": "file [file]"
+                "syntax": "file file"
             },
             {
                 "cmd": "delete",
                 "description": "Deletes something (breakpoint/cfh)",
                 "list_of_aliases": ["delete", "del", "d", "remove"],
                 "handler": self.handle_delete,
-                "syntax": "delete [breakpoint/cfh]"
+                "syntax": "delete breakpoint/cfh [who]"
             },
             {
                 "cmd": "disassemble",
@@ -184,11 +183,8 @@ class _Unpickler:
         
         print(greenify(f"[+] Disassembly written to {inp[0]}.out"))
 
+    @check_not_null
     def handle_delete(self, inp):
-        if len(inp) == 0:
-            safe_print(redify(f"[!] Invalid syntax. Type 'help' for more information."))
-            return
-
         something = inp[0]
         who = inp[1] if len(inp) > 1 else None
 
@@ -207,6 +203,7 @@ class _Unpickler:
             case _:
                 safe_print(redify(f"[!] Invalid argument {something}."))
 
+    @check_not_null
     def handle_file(self, inp):
         filename = inp[0]
 
@@ -294,6 +291,9 @@ class _Unpickler:
             except _Exit as e:
                 self.start = False
                 safe_print(redify(f"[!] Pickle called exit({e.value!r})."))
+            except ValidationError as e:
+                safe_print(redify(f"[!] {e}"))
+        
         
     def __clear_breakpoints(self):
         for funcname in self.breakpoints:
@@ -315,6 +315,7 @@ class _Unpickler:
                 "memo": self.memo
         }).run()
 
+    @check_not_null
     def set_control_flow_handler(self, inp):
         # TODO: change disasm_line_no according to the value of f.seek (and maybe other functions idk)
         if not hasattr(self, "_Unpickler__file"):
@@ -325,6 +326,7 @@ class _Unpickler:
         self.cfhname = cfhname
         globals()[cfhname] = self.__file
 
+    @check_not_null
     def handle_info(self, inp):
         something = inp[0]
 
@@ -425,11 +427,8 @@ class _Unpickler:
     
         self.print_entire_state() if not self.next_instruction(single=True) else self.print_state()
 
+    @check_not_null
     def handle_breakpoint(self, inp):
-        if len(inp) == 0:
-            safe_print(redify(f"[!] Invalid syntax. Type 'help' for more information."))
-            return
-
         if inp[0] == '*':
             self.stop_at_all_function_calls = True
             return 
@@ -478,19 +477,8 @@ class _Unpickler:
         self.print_state()
 
     def handle_help(self, _):
-        terminal_width = safe_get_terminal_size()[0]
-        lengths = (terminal_width - len(' pickledbg help'))//2
-        safe_print(grayify('─'*lengths)+cyanify(' pickledbg help ')+grayify('─'*lengths))
-
         for cmd in self.commands:
-            safe_print(cyanify(cmd["cmd"]))
-            safe_print(redify(cmd["description"]))
-            if "list_of_aliases" in cmd:
-                safe_print(yellowify("Aliases:")+f' {", ".join(cmd["list_of_aliases"])}')
-            if "syntax" in cmd:
-                safe_print(yellowify("Syntax:")+f' {cmd["syntax"]}')
-            safe_print()
-            safe_print(grayify('─'*terminal_width))
+            safe_print(f"{cyanify(cmd["cmd"])} - {cmd["description"].replace('\n', ' ')}")
 
     def handle_input(self):
         try:
@@ -514,7 +502,6 @@ class _Unpickler:
         else:
             safe_print(redify("[!] Invalid command. Type 'help' for a list of available commands."))
 
-        
     def print_disassembled_pickle(self, terminal_width):
         try:
             safe_print(grayify(''.join(['─' for _ in safe_range(terminal_width-16)]))+cyanify(' disassembly ')+grayify('───'))
@@ -941,7 +928,7 @@ class _Unpickler:
                 module = _compat_pickle.IMPORT_MAPPING[module]
         safe_import(module, level=0)
         if self.proto >= 4:
-            return _getattribute(sys.modules[module], name)[0]
+            return getattribute(sys.modules[module], name)[0]
         else:
             return getattr(sys.modules[module], name)
 

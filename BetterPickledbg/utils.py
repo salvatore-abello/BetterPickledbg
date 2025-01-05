@@ -1,7 +1,10 @@
 import sys
+from functools import wraps
 
-### FUNCTIONS ###
-def _getattribute(obj, name):
+from .errors import ValidationError
+
+
+def getattribute(obj, name):
     for subpath in name.split('.'):
         if subpath == '<locals>':
             raise AttributeError("Can't get local attribute {!r} on {!r}".format(name, obj))
@@ -23,7 +26,7 @@ def whichmodule(obj, name):
             or module is None):
             continue
         try:
-            if _getattribute(module, name)[0] is obj:
+            if getattribute(module, name)[0] is obj:
                 return module_name
         except AttributeError:
             pass
@@ -41,3 +44,11 @@ def encode_long(x):
 
 def decode_long(data):
     return int.from_bytes(data, byteorder='little', signed=True)
+
+def check_not_null(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if not args[1]:
+            raise ValidationError("Invalid syntax. Type 'help' for more information.")
+        return func(*args, **kwargs)
+    return wrapper
