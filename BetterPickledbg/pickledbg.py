@@ -266,7 +266,7 @@ class _Unpickler:
             tmpdir = tempfile.gettempdir()
             tmpname = tmpdir + '/tmp' + secrets.token_hex(6)
             self.__file.seek(0)
-            print(tmpname)
+
             with open(tmpname, "w") as tmpfile:
                 pickletools.dis(self.__file, out=tmpfile)
         except Exception as e:
@@ -294,7 +294,6 @@ class _Unpickler:
             except ValidationError as e:
                 safe_print(redify(f"[!] {e}"))
         
-        
     def __clear_breakpoints(self):
         for funcname in self.breakpoints:
             self.breakpoints[funcname]["hits"] = 0
@@ -308,16 +307,14 @@ class _Unpickler:
             safe_print(redify("[!] No pickle is running"))
             return 
            
-        PythonDebugger(
-            {
-                "stack": self.stack,
-                "metastack": self.metastack,
-                "memo": self.memo
+        PythonDebugger({
+            "stack": self.stack,
+            "metastack": self.metastack,
+            "memo": self.memo
         }).run()
 
     @check_not_null
     def set_control_flow_handler(self, inp):
-        # TODO: change disasm_line_no according to the value of f.seek (and maybe other functions idk)
         if not hasattr(self, "_Unpickler__file"):
             safe_print(redify("[!] No file loaded."))
             return
